@@ -1,0 +1,211 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Add a BE3 gateway",
+        "description": "Choose a gateway found on the network.",
+        "data": {
+          "host": "Gateway",
+          "port": "Listening port"
+        },
+        "data_description": {
+          "port": "The port this Home Assistant listens on for the gateway to connect back to."
+        }
+      },
+      "manual": {
+        "title": "Add a BE3 gateway",
+        "description": "Enter the gateway's address.",
+        "data": {
+          "host": "IP address",
+          "port": "Listening port"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "No BE3 gateway answered at that address."
+    },
+    "abort": {
+      "already_configured": "This gateway is already set up."
+    }
+  },
+  "entity": {
+    "event": {
+      "button": {
+        "name": "Button {number}",
+        "state_attributes": {
+          "event_type": {
+            "state": {
+              "press": "Pressed",
+              "click": "Clicked",
+              "long_press": "Held",
+              "release": "Released"
+            }
+          }
+        }
+      }
+    },
+    "switch": {
+      "led": {
+        "name": "Button {number} backlight"
+      }
+    },
+    "button": {
+      "identify": {
+        "name": "Identify address {address}"
+      }
+    }
+  },
+  "services": {
+    "identify": {
+      "name": "Identify component",
+      "description": "Makes a component flash so it can be located.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Gateway",
+          "description": "The BE3 gateway to use."
+        },
+        "address": {
+          "name": "Address",
+          "description": "CoTP address of the component."
+        }
+      }
+    },
+    "set_address": {
+      "name": "Change component address",
+      "description": "Moves a component to a different CoTP address. Refused if the target address is already in use. If two components share an address, both will receive this command and both will move, keeping the conflict: disconnect one of them before re-addressing the other.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Gateway",
+          "description": "The BE3 gateway to use."
+        },
+        "address": {
+          "name": "Current address",
+          "description": "The component's address now."
+        },
+        "new_address": {
+          "name": "New address",
+          "description": "The address to move it to."
+        }
+      }
+    },
+    "configure_keypad": {
+      "name": "Configure keypad",
+      "description": "Provisions a component as a keypad. This overwrites the component's existing configuration, including one written by another control system.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Gateway",
+          "description": "The BE3 gateway to use."
+        },
+        "address": {
+          "name": "Address",
+          "description": "CoTP address of the component."
+        },
+        "slot": {
+          "name": "Device slot",
+          "description": "Logical slot on the gateway, 1 to 4."
+        },
+        "buttons": {
+          "name": "Buttons",
+          "description": "How many buttons the panel has."
+        },
+        "name": {
+          "name": "Name",
+          "description": "Label stored on the panel. Truncated to ten bytes."
+        }
+      }
+    },
+    "clear_configuration": {
+      "name": "Clear component configuration",
+      "description": "Clears a component's stored configuration.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Gateway",
+          "description": "The BE3 gateway to use."
+        },
+        "address": {
+          "name": "Address",
+          "description": "CoTP address of the component."
+        },
+        "slot": {
+          "name": "Device slot",
+          "description": "Logical slot on the gateway, 1 to 4."
+        },
+        "kind": {
+          "name": "Component type",
+          "description": "The configuration to clear."
+        }
+      }
+    },
+    "start_update": {
+      "name": "Start firmware update",
+      "description": "Starts a pending gateway firmware update. Only available while the gateway reports one waiting.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Gateway",
+          "description": "The BE3 gateway to use."
+        }
+      }
+    }
+  },
+  "config_subentries": {
+    "component": {
+      "title": "Bus component",
+      "step": {
+        "user": {
+          "title": "Add a component",
+          "description": "Components normally appear on their own from the gateway. Add one by hand only if it is not reporting yet.",
+          "data": {
+            "address": "Component address",
+            "kind": "Component type",
+            "buttons": "Number of buttons",
+            "slot": "Device slot",
+            "name": "Name",
+            "panel": "Panel group"
+          },
+          "data_description": {
+            "kind": "What this component is. The gateway reports that an address exists but never what lives there — press Identify to make it flash if you are not sure.",
+            "buttons": "Keypads only. How many buttons the panel has.",
+            "slot": "Logical slot on the gateway, 1 to 4. Only used when provisioning.",
+            "panel": "Components of one physical panel that share this label are grouped together. A SUBLIME Pro uses two addresses."
+          }
+        },
+        "reconfigure": {
+          "title": "Component settings",
+          "description": "Tell Home Assistant what this component is. Use the Identify button on this device if you need to find it first.",
+          "data": {
+            "address": "Component address",
+            "kind": "Component type",
+            "buttons": "Number of buttons",
+            "slot": "Device slot",
+            "name": "Name",
+            "panel": "Panel group"
+          },
+          "data_description": {
+            "kind": "What this component is. The gateway reports that an address exists but never what lives there — press Identify to make it flash if you are not sure.",
+            "buttons": "Keypads only. How many buttons the panel has.",
+            "slot": "Logical slot on the gateway, 1 to 4. Only used when provisioning.",
+            "panel": "Components of one physical panel that share this label are grouped together. A SUBLIME Pro uses two addresses."
+          }
+        }
+      },
+      "error": {
+        "invalid_component": "Those settings are not usable. A keypad needs between 1 and 6 buttons.",
+        "slot_in_use": "Device slot already used by {slot_owner}. Two components in one slot overwrite each other's configuration on the panel."
+      },
+      "abort": {
+        "reconfigure_successful": "Component updated."
+      },
+      "entry_type": "component"
+    }
+  },
+  "selector": {
+    "component_kind": {
+      "options": {
+        "unknown": "Not identified yet",
+        "button": "Keypad",
+        "dimmer": "Dimmer",
+        "shade": "Shade controller"
+      }
+    }
+  }
+}

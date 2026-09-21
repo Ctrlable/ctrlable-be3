@@ -1,0 +1,106 @@
+identify:
+  fields:
+    config_entry_id:
+      required: true
+      selector:
+        config_entry:
+          integration: ctrlable_be3
+    address:
+      required: true
+      selector:
+        number:
+          min: 0
+          max: 255
+          mode: box
+
+set_address:
+  fields:
+    config_entry_id:
+      required: true
+      selector:
+        config_entry:
+          integration: ctrlable_be3
+    address:
+      required: true
+      selector:
+        number:
+          min: 0
+          max: 255
+          mode: box
+    new_address:
+      required: true
+      selector:
+        number:
+          min: 0
+          max: 255
+          mode: box
+
+configure_keypad:
+  fields:
+    config_entry_id:
+      required: true
+      selector:
+        config_entry:
+          integration: ctrlable_be3
+    address:
+      required: true
+      selector:
+        number:
+          min: 0
+          max: 255
+          mode: box
+    slot:
+      required: true
+      selector:
+        number:
+          min: 1
+          max: 4
+          mode: box
+    buttons:
+      required: true
+      selector:
+        number:
+          min: 1
+          max: 6
+          mode: box
+    name:
+      selector:
+        text:
+
+clear_configuration:
+  fields:
+    config_entry_id:
+      required: true
+      selector:
+        config_entry:
+          integration: ctrlable_be3
+    address:
+      required: true
+      selector:
+        number:
+          min: 0
+          max: 255
+          mode: box
+    slot:
+      required: true
+      selector:
+        number:
+          min: 1
+          max: 4
+          mode: box
+    kind:
+      required: true
+      selector:
+        select:
+          options:
+            - button
+            - dimmer
+            - shade
+
+start_update:
+  fields:
+    config_entry_id:
+      required: true
+      selector:
+        config_entry:
+          integration: ctrlable_be3
