@@ -21,6 +21,7 @@ import logging
 
 from .gateway import BE3Gateway, GatewayState
 from .protocol import (
+    DEFAULT_BUTTONS,
     MAX_ADDRESS,
     MAX_BUTTONS,
     MAX_DEVICE_INDEX,
@@ -29,8 +30,12 @@ from .protocol import (
     MOLD_BUTTON,
     MOLD_DIMMER,
     MOLD_SHADE,
+    SHADE_BOTTOM_TO_TOP,
+    build_blank_config,
     build_clear_config,
     build_configure_buttons,
+    build_configure_dimmer,
+    build_configure_shade,
     build_identify,
     build_led,
     build_ota_start,
@@ -41,6 +46,15 @@ _LOGGER = logging.getLogger(__name__)
 
 #: How long to wait for a heartbeat to confirm a re-address.
 VERIFY_TIMEOUT = 20.0
+
+#: How long to allow for the restart that follows writing a personality.
+#: Panels reboot when their configuration changes, which takes seconds, not
+#: milliseconds.
+RESTART_TIMEOUT = 45.0
+
+#: How long a write waits for a component that is not on the bus. A
+#: panel restart takes most of a minute, and writing is what causes one.
+ADDRESS_WAIT = 90.0
 
 KNOWN_MOLDS = (MOLD_BUTTON, MOLD_DIMMER, MOLD_SHADE)
 
@@ -73,6 +87,15 @@ class VerificationFailed(ProvisioningError):
     """The change was sent but the gateway never confirmed it."""
 
 
+def _validate_link(link: str) -> None:
+    """A link is two numbers the panel stores and quotes back to us."""
+    parts = str(link).split(",")
+    if len(parts) != 2 or not all(part.strip().isdigit() for part in parts):
+        raise InvalidRequest(
+            f"A link must be '<devId>,<devAtrId>', got {link!r}"
+        )
+
+
 def truncate_name(name: str) -> str:
     """Shorten a label to what the gateway will actually store.
 
@@ -88,8 +111,13 @@ def truncate_name(name: str) -> str:
 class Provisioner:
     """High-level provisioning operations against one gateway."""
 
-    def __init__(self, gateway: BE3Gateway) -> None:
+    def __init__(
+        self, gateway: BE3Gateway, *, known_timeout: float = ADDRESS_WAIT
+    ) -> None:
         self._gateway = gateway
+        #: How long to wait for a component to reappear before refusing to
+        #: write to it. Shortened in tests.
+        self._known_timeout = known_timeout
 
     # ------------------------------------------------------------------
     # Non-destructive
@@ -123,7 +151,10 @@ class Provisioner:
         *,
         require_known: bool = True,
     ) -> None:
-        """Provision a component as a keypad.
+        """Provision a component as a keypad
+
+        **The panel restarts** when its configuration changes, so it drops off
+        the bus for a few seconds and anything sent in that window is lost..
 
         This **overwrites** the component's existing bindings, including any
         written by another control system, so a component still configured as a
@@ -135,8 +166,18 @@ class Provisioner:
             raise InvalidRequest(
                 f"Button count must be between 1 and {MAX_BUTTONS}, got {count}"
             )
+        if count > DEFAULT_BUTTONS:
+            # The vendor documents 1-6. Larger panels may well work — their own
+            # driver hints at 8 — but nothing here has been tested above six.
+            _LOGGER.warning(
+                "Provisioning %s buttons on component %s; the vendor documents "
+                "at most %s, so treat this as untested",
+                count,
+                address,
+                DEFAULT_BUTTONS,
+            )
         if require_known:
-            self._require_known(address)
+            await self._await_known(address)
 
         _LOGGER.info(
             "Configuring component %s as a %s-button keypad (slot %s)",
@@ -150,10 +191,96 @@ class Provisioner:
             )
         )
 
+    async def configure_dimmer(
+        self,
+        address: int,
+        index: int,
+        brightness_link: str,
+        *,
+        name: str | None = None,
+        colour_link: str | None = None,
+        require_known: bool = True,
+    ) -> None:
+        """Provision a component as a dimmer
+
+        **The panel restarts** when its configuration changes, so it drops off
+        the bus for a few seconds and anything sent in that window is lost. bound to a link.
+
+        **Overwrites** whatever the component was doing before, exactly as
+        making it a keypad does.
+        """
+        self._validate_address(address)
+        self._validate_index(index)
+        _validate_link(brightness_link)
+        if colour_link:
+            _validate_link(colour_link)
+        if require_known:
+            await self._await_known(address)
+
+        _LOGGER.info(
+            "Configuring component %s as a dimmer on link %s (slot %s)",
+            address,
+            brightness_link,
+            index,
+        )
+        await self._send(
+            build_configure_dimmer(
+                address,
+                index,
+                brightness_link,
+                name=truncate_name(name) if name else None,
+                colour_link=colour_link,
+            )
+        )
+
+    async def configure_shade(
+        self,
+        address: int,
+        index: int,
+        level_link: str,
+        *,
+        name: str | None = None,
+        direction: int = SHADE_BOTTOM_TO_TOP,
+        require_known: bool = True,
+    ) -> None:
+        """Provision a component as a shade controller
+
+        **The panel restarts** when its configuration changes, so it drops off
+        the bus for a few seconds and anything sent in that window is lost. bound to a link."""
+        self._validate_address(address)
+        self._validate_index(index)
+        _validate_link(level_link)
+        if direction not in (1, 2, 3, 4):
+            raise InvalidRequest(f"Unknown shade orientation {direction}")
+        if require_known:
+            await self._await_known(address)
+
+        _LOGGER.info(
+            "Configuring component %s as a shade on link %s (slot %s)",
+            address,
+            level_link,
+            index,
+        )
+        await self._send(
+            build_configure_shade(
+                address,
+                index,
+                level_link,
+                name=truncate_name(name) if name else None,
+                direction=direction,
+            )
+        )
+
     async def clear_configuration(
         self, address: int, index: int, mold: str, name: str | None = None
     ) -> None:
-        """Clear a component's configuration for the given module type."""
+        """Clear a page's configuration for the given module type.
+
+        Unlike writing one, this does **not** restart the panel: observed on
+        firmware 0.10, a component kept polling straight through its
+        neighbours being cleared. So callers need only a moment between
+        clears, not a reboot.
+        """
         self._validate_address(address)
         self._validate_index(index)
         if mold not in KNOWN_MOLDS:
@@ -162,6 +289,31 @@ class Provisioner:
         _LOGGER.info("Clearing %s configuration on component %s", mold, address)
         await self._send(
             build_clear_config(
+                address, index, mold, truncate_name(name) if name else None
+            )
+        )
+
+    async def blank_configuration(
+        self, address: int, index: int, mold: str, name: str | None = None
+    ) -> None:
+        """Overwrite a page with empty links, the nearest thing to deleting it.
+
+        Restarts the panel, as every write does. Worth it: this is the only
+        thing that actually stops a leftover page, since clearing one does
+        nothing on this firmware.
+        """
+        self._validate_address(address)
+        self._validate_index(index)
+
+        _LOGGER.info(
+            "Blanking %s page %s on component %s: the page stays on the panel "
+            "but points at nothing",
+            mold,
+            index,
+            address,
+        )
+        await self._send(
+            build_blank_config(
                 address, index, mold, truncate_name(name) if name else None
             )
         )
@@ -190,7 +342,7 @@ class Provisioner:
             raise AddressInUse(f"Address {new} is already used by another component")
         if new == state.gateway_address:
             raise AddressInUse(f"Address {new} belongs to the gateway itself")
-        self._require_known(old)
+        await self._await_known(old)
 
         _LOGGER.info("Re-addressing component %s to %s", old, new)
         await self._send(build_set_address(old, new))
@@ -219,6 +371,54 @@ class Provisioner:
     # ------------------------------------------------------------------
     # Observation
     # ------------------------------------------------------------------
+
+    async def wait_for_restart(
+        self, address: int, *, timeout: float = RESTART_TIMEOUT
+    ) -> bool:
+        """Wait for a component to drop off the bus and come back.
+
+        Writing a personality restarts the panel. That restart is the only
+        evidence the write was accepted — the gateway acknowledges nothing — so
+        watching the address disappear and return confirms it.
+
+        Returns True when a full drop and return was seen. False means the
+        restart was not observed, which is not a failure: heartbeats arrive
+        every few seconds, and a panel that restarts between two of them never
+        appears to have left.
+        """
+        try:
+            async with asyncio.timeout(timeout):
+                await self._wait_until(lambda state: address not in state.device_addresses)
+        except TimeoutError:
+            return False
+
+        _LOGGER.debug("Component %s left the bus; waiting for it to return", address)
+        try:
+            await self.wait_for_address(address, timeout=timeout)
+        except TimeoutError:
+            raise VerificationFailed(
+                f"Component {address} restarted but has not come back within "
+                f"{timeout:.0f}s; it may need power cycling"
+            ) from None
+        return True
+
+    async def _wait_until(self, predicate) -> None:
+        """Wait for gateway state to satisfy a predicate."""
+        if predicate(self._gateway.state):
+            return
+        done = asyncio.Event()
+
+        def _watch(state: GatewayState) -> None:
+            if predicate(state):
+                done.set()
+
+        unsubscribe = self._gateway.add_state_listener(_watch)
+        try:
+            if predicate(self._gateway.state):
+                return
+            await done.wait()
+        finally:
+            unsubscribe()
 
     async def wait_for_address(
         self, address: int, *, timeout: float = VERIFY_TIMEOUT
@@ -272,7 +472,15 @@ class Provisioner:
                 f"Button must be between 1 and {MAX_BUTTONS}, got {button}"
             )
 
-    def _require_known(self, address: int) -> None:
+    async def _await_known(self, address: int) -> None:
+        """Wait for a component to be present, then allow the write.
+
+        A panel that is restarting is missing from the heartbeat for the best
+        part of a minute, and writing is what restarts it — so anyone changing
+        two pages in a row asks about an address that is temporarily gone.
+        Refusing outright turned that into "Could not configure component 24"
+        on a panel that was simply on its way back.
+        """
         state = self._gateway.state
         if not state.device_addresses:
             # Nothing has been reported yet; refusing would block a gateway
@@ -280,8 +488,19 @@ class Provisioner:
             return
         if address in state.device_addresses:
             return
-        raise UnknownComponent(
-            f"The gateway has not reported a component at address {address}. "
-            f"Known components: "
-            f"{', '.join(str(a) for a in state.device_addresses) or 'none'}"
+
+        _LOGGER.info(
+            "Component %s is not on the bus right now; waiting up to %.0fs for "
+            "it, since a panel that was just written to is restarting",
+            address,
+            self._known_timeout,
         )
+        try:
+            await self.wait_for_address(address, timeout=self._known_timeout)
+        except TimeoutError:
+            raise UnknownComponent(
+                f"The gateway has not reported a component at address "
+                f"{address} within {self._known_timeout:.0f}s. Known "
+                f"components: "
+                f"{', '.join(str(a) for a in self._gateway.state.device_addresses) or 'none'}"
+            ) from None

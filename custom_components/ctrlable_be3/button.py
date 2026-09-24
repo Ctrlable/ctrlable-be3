@@ -33,12 +33,19 @@ async def async_setup_entry(
     """Create an identify button for every configured component."""
     runtime = entry.runtime_data
     mac = entry.data[CONF_MAC]
+    via = runtime.gateway_device
 
     for managed in runtime.components:
+        if managed.component.ignored:
+            continue
         async_add_entities(
             [
                 BE3IdentifyButton(
-                    runtime.gateway, runtime.provisioner, mac, managed.component
+                    runtime.gateway,
+                    runtime.provisioner,
+                    mac,
+                    managed.component,
+                    via,
                 )
             ],
             config_subentry_id=managed.subentry_id,
@@ -56,10 +63,11 @@ class BE3IdentifyButton(BE3ComponentEntity, ButtonEntity):
         provisioner: Provisioner,
         mac: str,
         component: Component,
+        via_device_id: str | None = None,
     ) -> None:
-        super().__init__(gateway, mac, component)
+        super().__init__(gateway, mac, component, via_device_id)
         self._provisioner = provisioner
-        self._attr_unique_id = identify_unique_id(mac, component.address)
+        self._attr_unique_id = identify_unique_id(mac, component.address, component.slot)
         self._attr_translation_key = "identify"
         self._attr_translation_placeholders = {"address": str(component.address)}
 

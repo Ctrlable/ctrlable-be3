@@ -21,22 +21,37 @@ class BE3ComponentEntity(Entity):
     _attr_should_poll = False
 
     def __init__(
-        self, gateway: BE3Gateway, mac: str, component: Component
+        self,
+        gateway: BE3Gateway,
+        mac: str,
+        component: Component,
+        via_device_id: str | None = None,
     ) -> None:
         self._gateway = gateway
         self._mac = mac
         self._component = component
+        self._via_device_id = via_device_id
 
     @property
     def device_info(self) -> DeviceInfo:
         return DeviceInfo(
             identifiers={
-                (DOMAIN, component_device_id(self._mac, self._component.address))
+                (
+                    DOMAIN,
+                    component_device_id(
+                        self._mac, self._component.address, self._component.slot
+                    ),
+                )
             },
             name=component_name(self._component),
             manufacturer=MANUFACTURER,
             model=component_model(self._component),
-            via_device=(DOMAIN, gateway_device_id(self._mac)),
+            # The address is the only identifier the hardware has, and the one
+            # every service, log line and flashing panel refers to. Two shades
+            # called "Blackout 1" and "K Shade" are otherwise indistinguishable
+            # from each other on their device pages.
+            serial_number=f"CoTP address {self._component.address}",
+            via_device_id=self._via_device_id,
             # Components of one physical panel share a label, which groups them
             # without pretending they are a single device.
             suggested_area=self._component.panel or None,
@@ -59,10 +74,14 @@ def component_name(component: Component) -> str:
     """Label for a component's device.
 
     An unconfigured component is named after its address, because that is
-    genuinely all anyone knows about it until it is identified.
+    genuinely all anyone knows about it until it is identified. A named one
+    keeps its address too: one screen can hold several pages, and "Blackout 1"
+    alone does not say which address or which page it is.
     """
+    if component.ignored:
+        return f"Address {component.address} (not a device)"
     if component.name:
-        return component.name
+        return f"{component.name} ({component.address}·{component.slot})"
     return f"BE3 component {component.address}"
 
 

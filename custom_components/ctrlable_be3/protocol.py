@@ -52,6 +52,15 @@ VAL_DOWN = 0
 VAL_CLICK = 1
 VAL_HOLD = 0xFF
 
+#: Under TY_PRESS the value is the tap count: 1 for a tap, 2 for a double tap,
+#: and presumably upwards. Observed on 2026-09-22 — the original capture this
+#: module was written from contains only 0, 1 and 0xFF, because nobody
+#: double-tapped while it was recording, so a double tap was being discarded as
+#: an unknown value. The panel counts taps itself; nothing here has to time
+#: them.
+VAL_DOUBLE = 2
+VAL_TRIPLE = 3
+
 # Value type codes used by setVal.
 TYPE_OFF = 0x80
 TYPE_ON = 0x81
@@ -67,6 +76,12 @@ BRIGHTNESS_OFFSET = 0x300
 CMD_GET_VALUE = 5
 CMD_SET_VALUE = 6
 
+#: Shade orientations, as the vendor's configuration guide numbers them.
+SHADE_SEPARATE = 1
+SHADE_LEFT_TO_RIGHT = 2
+SHADE_RIGHT_TO_LEFT = 3
+SHADE_BOTTOM_TO_TOP = 4
+
 #: Module identifiers used in configuration messages.
 MOLD_BUTTON = "btn"
 MOLD_DIMMER = "dim"
@@ -77,12 +92,22 @@ MOLD_SHADE = "cn"
 MIN_ADDRESS = 0
 MAX_ADDRESS = 255
 
-#: Buttons per keypad component, per the vendor's configuration guide.
-MAX_BUTTONS = 6
+#: Buttons on the panels the vendor documents, used as a default rather than
+#: a limit. The specification says 1-6 throughout, but that is a convention:
+#: the button byte on the wire holds 0-255, and the vendor's own Control4
+#: driver carries a commented-out NUMBER_BUTTONS = 8 above its 6.
+DEFAULT_BUTTONS = 6
 
-#: Logical device slots. The vendor's own driver exposes four; raising this is
-#: untested rather than known to be wrong.
-MAX_DEVICE_INDEX = 4
+#: The most buttons we accept. Well past any panel we have seen, but still
+#: bounded, so a misread frame cannot invent a keypad with 200 buttons.
+MAX_BUTTONS = 32
+
+#: Logical device slots (``devIdx``). This is the controller's own bookkeeping
+#: index, not a property of the panel: it identifies which of our components a
+#: message refers to. The vendor's driver exposes four because its UI has four
+#: device slots, not because the bus does — a gateway can carry more components
+#: than that, so the cap here is generous and only guards against nonsense.
+MAX_DEVICE_INDEX = 32
 
 #: The gateway silently truncates labels at ten bytes.
 MAX_NAME_BYTES = 10
@@ -99,6 +124,8 @@ class ButtonAction(str, Enum):
 
     PRESS = "press"
     CLICK = "click"
+    DOUBLE_TAP = "double_tap"
+    TRIPLE_TAP = "triple_tap"
     HOLD = "hold"
     HOLD_RELEASE = "hold_release"
 
@@ -164,6 +191,50 @@ class ValueRequest:
         if self.is_write and self.type_code == TYPE_BRIGHTNESS:
             return decode_brightness(self.value)
         return None
+
+
+class ValueAction(str, Enum):
+    """What a dimmer or shade component was asked to do.
+
+    A panel configured as anything but a keypad reports no button events: its
+    presses arrive as value writes against whatever it is linked to. These are
+    those presses, named.
+    """
+
+    ON = "on"
+    OFF = "off"
+    BRIGHTNESS = "brightness"
+    COLOUR_TEMPERATURE = "colour_temperature"
+    OPEN = "open"
+    CLOSE = "close"
+    STOP = "stop"
+
+
+def describe_value(request: ValueRequest) -> tuple[ValueAction, dict[str, Any]] | None:
+    """Name what a value write was asking for, with any value it carried.
+
+    Returns None for reads and for writes we do not model, so a caller can log
+    the rest rather than inventing meaning for them.
+    """
+    if not request.is_write:
+        return None
+
+    if request.type_code == TYPE_ON:
+        return ValueAction.ON, {}
+    if request.type_code == TYPE_OFF:
+        return ValueAction.OFF, {}
+    if request.type_code == TYPE_BRIGHTNESS:
+        return ValueAction.BRIGHTNESS, {"brightness": decode_brightness(request.value)}
+    if request.type_code == TYPE_SHADE_LEVEL:
+        # The vendor's driver reads 100 as fully open and 0 as fully closed.
+        if request.value == 100:
+            return ValueAction.OPEN, {}
+        if request.value == 0:
+            return ValueAction.CLOSE, {}
+        return ValueAction.OPEN, {"level": request.value}
+    if request.type_code == TYPE_SHADE_STOP:
+        return ValueAction.STOP, {}
+    return None
 
 
 @dataclass(frozen=True)
@@ -328,12 +399,19 @@ class ButtonTracker:
     Observed on firmware 0.10, where every gesture opens with ``0x4f``/0:
 
     * tap          ``0x4f``/0 then ``0x4f``/1
+    * double tap   ``0x4f``/0 then ``0x4f``/2
     * medium hold  ``0x4f``/0 then ``0x4e``/0
     * long hold    ``0x4f``/0, ``0x4f``/255 (~1s in), then ``0x4e``/0
 
     So ``0x4e`` means "released after a hold" only once the hold was reported;
     otherwise it is just a slow click. The reference Control4 driver draws the
     same distinction using a pending-timer flag.
+
+    The value under ``0x4f`` is a **tap count**, which is how the panel reports
+    a double tap — it does the counting, and there is no release event after
+    one. A tap count above three is reported as a triple tap rather than
+    dropped: whatever the panel means by it, the gesture was more than a double,
+    and discarding it would lose the press entirely.
     """
 
     def __init__(self) -> None:
@@ -352,6 +430,12 @@ class ButtonTracker:
             if report.value == VAL_HOLD:
                 self._holding.add(key)
                 return [ButtonAction.HOLD]
+            if report.value == VAL_DOUBLE:
+                self._holding.discard(key)
+                return [ButtonAction.DOUBLE_TAP]
+            if report.value >= VAL_TRIPLE:
+                self._holding.discard(key)
+                return [ButtonAction.TRIPLE_TAP]
             return []
 
         if report.type_code in (TY_RELEASE_AFTER_HOLD, TY_RELEASE):
@@ -413,6 +497,106 @@ def build_configure_buttons(
     if name:
         payload["name"] = name
     return payload
+
+
+def build_configure_dimmer(
+    address: int,
+    index: int,
+    brightness_link: str,
+    *,
+    name: str | None = None,
+    brightness_limits: str = "0,100,5",
+    colour_link: str | None = None,
+    colour_limits: str = "0,100,5",
+) -> dict[str, Any]:
+    """Provision a component as a dimmer bound to a link.
+
+    A link is ``"<devId>,<devAtrId>"``. Those numbers mean nothing to the
+    panel: it stores them and quotes them back in every ``setVal``, which is
+    how a controller knows what the press was meant to operate. The vendor's
+    driver puts Control4 device ids there; anything consistent works.
+
+    Note the absent ``cmd`` key — this message is identified by its shape.
+    """
+    payload: dict[str, Any] = {
+        "devMold": MOLD_DIMMER,
+        "devCotpAddr": address,
+        "devIdx": index,
+        "dimBrightnessLink": brightness_link,
+        "dimlimL": brightness_limits,
+    }
+    if name:
+        payload["name"] = name
+    # Always sent, empty when there is no colour temperature, because that is
+    # what the vendor's driver does and the gateway branches on the key's mere
+    # presence: with it, the panel is told ";WL=<link>;WM=<limits>"; without
+    # it, the clause is absent entirely. Omitting it produced a message this
+    # hardware never receives from its own controller, and the one write we
+    # made that way was silently ignored.
+    payload["dimColorTemperatureLink"] = colour_link or ""
+    payload["dimlimC"] = colour_limits
+    return payload
+
+
+def build_configure_shade(
+    address: int,
+    index: int,
+    level_link: str,
+    *,
+    name: str | None = None,
+    direction: int = SHADE_BOTTOM_TO_TOP,
+) -> dict[str, Any]:
+    """Provision a component as a shade controller bound to a link."""
+    payload: dict[str, Any] = {
+        "devMold": MOLD_SHADE,
+        "devCotpAddr": address,
+        "devIdx": index,
+        "cnLeveLink": level_link,
+        "cnLimD": direction,
+    }
+    if name:
+        payload["name"] = name
+    return payload
+
+
+def build_blank_config(
+    address: int, index: int, mold: str, name: str | None = None
+) -> dict[str, Any]:
+    """Point a page at nothing, since a page cannot be removed.
+
+    ``clrCfg`` has no effect on firmware 0.10 — a cleared page keeps its name
+    on the screen and keeps polling, across a panel reboot. Writing does work,
+    so the closest thing to deleting a page is to overwrite it with empty
+    links: it stops asking about a link nobody owns, and stops driving anything
+    when it is touched.
+
+    This is what the vendor's own driver ends up sending. Its CLEAR blanks the
+    link properties and the next save writes them back empty, which the gateway
+    passes through as ``LL=;``.
+
+    The limits stay: the gateway concatenates them into the message without
+    checking, so leaving them out crashes its handler rather than blanking
+    anything.
+    """
+    if mold == MOLD_DIMMER:
+        return {
+            "devMold": MOLD_DIMMER,
+            "devCotpAddr": address,
+            "devIdx": index,
+            "dimBrightnessLink": "",
+            "dimlimL": "0,100,5",
+            **({"name": name} if name else {}),
+        }
+    if mold == MOLD_SHADE:
+        return {
+            "devMold": MOLD_SHADE,
+            "devCotpAddr": address,
+            "devIdx": index,
+            "cnLeveLink": "",
+            "cnLimD": SHADE_BOTTOM_TO_TOP,
+            **({"name": name} if name else {}),
+        }
+    raise ValueError(f"Cannot blank a {mold!r} page")
 
 
 def build_clear_config(

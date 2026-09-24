@@ -1,7 +1,7 @@
 {
   "domain": "ctrlable_be3",
   "name": "Ctrlable BE3",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "LifeSmart SUBLIME control panels over the BE3 CoTP network adaptor. Discovers bus components, reports button events, and drives keypad backlights.",
   "documentation": "https://github.com/Ctrlable/ctrlable-be3",
   "issue_tracker": "https://github.com/Ctrlable/ctrlable-be3/issues",

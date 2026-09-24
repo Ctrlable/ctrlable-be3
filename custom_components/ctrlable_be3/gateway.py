@@ -50,6 +50,14 @@ SEARCH_INTERVAL = 5.0
 #: Read size for the TCP stream. Messages are far smaller than this.
 _READ_SIZE = 4096
 
+#: How long a connected gateway may go without a heartbeat before we say
+#: so. Heartbeats arrive every ~5s, so this is many missed in a row.
+BUS_SILENCE_TIMEOUT = 60.0
+
+#: Idle drops in a row that mean the gateway's bus loop has stopped rather
+#: than the network having a bad day.
+WEDGE_DROPS = 3
+
 
 @dataclass(frozen=True)
 class GatewayState:
@@ -117,6 +125,11 @@ class BE3Gateway:
         self._tasks: set[asyncio.Task[Any]] = set()
         self._buttons = ButtonTracker()
         self._send_lock = asyncio.Lock()
+        self._last_heartbeat: float | None = None
+        self._bus_warned = False
+        self._idle_drops = 0
+        self._wedge_warned = False
+        self._heartbeats_this_session = 0
 
         self._message_listeners: list[MessageListener] = []
         self._state_listeners: list[StateListener] = []
@@ -165,6 +178,7 @@ class BE3Gateway:
 
         self._spawn(self._discovery_loop(), "discovery")
         self._spawn(self._idle_watchdog(), "watchdog")
+        self._spawn(self._bus_watchdog(), "bus-watchdog")
         _LOGGER.debug("BE3 gateway listening on %s:%s", self._bind_host, self.port)
 
     async def stop(self) -> None:
@@ -195,6 +209,10 @@ class BE3Gateway:
         data = encode(payload)
         async with self._send_lock:
             try:
+                # Logged as bytes: half of what this protocol does wrong is
+                # about a value's type, and a dict repr hides the difference
+                # between 1 and "1".
+                _LOGGER.debug("BE3 <- %s", data)
                 writer.write(data)
                 await writer.drain()
             except (OSError, ConnectionError) as err:
@@ -267,6 +285,8 @@ class BE3Gateway:
         if writer is not None:
             await _close_writer(writer)
         self._last_seen = None
+        # Counted per session: one heartbeat on connect proves nothing.
+        self._heartbeats_this_session = 0
         self._buttons.reset()
         if self._state.connected:
             _LOGGER.info("BE3 gateway disconnected")
@@ -300,6 +320,31 @@ class BE3Gateway:
                 with contextlib.suppress(OSError):
                     udp.sendto(datagram, (address, self._discovery_port))
 
+    async def _bus_watchdog(self) -> None:
+        """Warn when the gateway is connected but its bus has gone quiet.
+
+        The firmware runs its bus polling in a loop that stops for good if
+        anything in it throws, while the TCP and UDP sides stay up. The gateway
+        then answers discovery and holds its connection while reporting nothing
+        at all — indistinguishable from a quiet site unless someone is looking
+        for heartbeats specifically. Only a power cycle brings it back.
+        """
+        while True:
+            await asyncio.sleep(BUS_SILENCE_TIMEOUT / 2)
+            if not self.connected or self._last_heartbeat is None:
+                continue
+            silence = time.monotonic() - self._last_heartbeat
+            if silence < BUS_SILENCE_TIMEOUT or self._bus_warned:
+                continue
+            self._bus_warned = True
+            _LOGGER.warning(
+                "The BE3 is connected but has sent no heartbeat for %.0fs. Its "
+                "firmware polls the bus in a loop that stops permanently if it "
+                "errors, leaving the network side running — so buttons and "
+                "panels will report nothing until the gateway is power-cycled.",
+                silence,
+            )
+
     async def _idle_watchdog(self) -> None:
         """Drop a session that has gone quiet.
 
@@ -317,7 +362,31 @@ class BE3Gateway:
                     "No traffic from BE3 for %.1fs, dropping connection",
                     self._idle_timeout,
                 )
+                self._idle_drops += 1
+                self._warn_wedged()
                 await self._close_session()
+
+    def _warn_wedged(self) -> None:
+        """Name the failure when a gateway accepts sockets but says nothing.
+
+        The firmware has a state where its bus loop stops while its network
+        stack keeps running: it accepts a connection, sends one heartbeat, then
+        goes quiet, and we drop it and take it again forever. Nothing here
+        recovers it — only power. Said once, with the remedy, because the loop
+        otherwise reads as an ordinary network problem for as long as anyone
+        cares to watch it.
+        """
+        if self._idle_drops < WEDGE_DROPS or self._wedge_warned:
+            return
+        self._wedge_warned = True
+        _LOGGER.error(
+            "The BE3 gateway has accepted %s connections in a row and then "
+            "gone silent, which means its bus loop has stopped while its "
+            "network stack keeps answering. Nothing in software recovers this: "
+            "power cycle the gateway. Devices on the bus keep working from "
+            "their own buttons in the meantime.",
+            self._idle_drops,
+        )
 
     # ------------------------------------------------------------------
     # Dispatch
@@ -325,6 +394,22 @@ class BE3Gateway:
 
     def _dispatch(self, message: Message) -> None:
         if isinstance(message, Heartbeat):
+            # Logged only when the bus changes: they arrive every few seconds
+            # and would otherwise bury everything else.
+            if message.device_addresses != self._state.device_addresses:
+                _LOGGER.debug("BE3 -> %s", message)
+        else:
+            _LOGGER.debug("BE3 -> %s", message)
+
+        if isinstance(message, Heartbeat):
+            self._last_heartbeat = time.monotonic()
+            self._bus_warned = False
+            # Two heartbeats in one session is a bus loop that is running: a
+            # wedged gateway manages exactly one, on connect.
+            if self._heartbeats_this_session:
+                self._idle_drops = 0
+                self._wedge_warned = False
+            self._heartbeats_this_session += 1
             self._update_state(
                 firmware=message.version,
                 gateway_address=message.gateway_address,

@@ -83,7 +83,9 @@ Notes that matter:
 - `subscribe` is **synchronous** and returns an unsubscribe callable. It hands
   each press to `controller.handle_button(int(button), action)`.
 - `controller.serial` is `entry.data["device_serial"]` — the backend filters
-  events by comparing it to the keypad identity in the event payload.
+  events by comparing it to the keypad identity in the event payload. That
+  identity is `<mac>-<address>-<page>`: a component can hold several pages,
+  so the address alone does not identify one.
 - A button that is not configured in Buttons Machine is dropped silently, so a
   keypad that appears to do nothing is usually an unconfigured button.
 - `async_find_leds` returns `{button_number: handle}`, and the handle is opaque:
@@ -117,3 +119,69 @@ discovery.
    gate, and the license label entries. **Without the serial-prefix branch a
    keypad is silently created as a generic Lutron keypad.**
 5. `const.py`: only needed if we ever ship without explicit `button_numbers`.
+
+
+## How a panel's own screen works
+
+Observed on a SUBLIME Pro's small screen, and confirmed against the vendor's
+driver.
+
+A component configured as a dimmer shows a property page. Its top-left button
+cycles the property — Power, Brightness, Colour Temperature — and the remaining
+buttons act on whichever is selected: on/raise, off/lower. All of that happens
+**on the panel**. A controller never sees the selection, only the write it
+produces.
+
+What a controller does decide is **which properties exist**, and it does so
+purely by how many links it configures:
+
+```
+ID=<idx>;MD=dim;LL=<brightness link>;LM=<min,max,step>;WL=<colour link>;WM=<limits>
+```
+
+`LL` gives it a brightness page, `WL` a colour-temperature page. Configure one
+and the selector offers one property; configure both and it offers both.
+
+The reason this matters for decoding: **brightness and colour temperature are
+written with the same type code** (`0xE3`). Only the link quoted back
+distinguishes them. So a link is not merely a destination, it is the address of
+a *property* — which is why `links.py` maps each link to a role rather than to
+an entity alone.
+
+Reads work the same way. The panel polls each link so its screen can show the
+real value, and a controller answers per link.
+
+**Open question for LifeSmart:** panels appear to offer full colour as well as
+colour temperature, but the protocol documents only these two dimmer links. If
+colour is reachable, it needs a link type that is not in the specification.
+
+
+## Done: the backend (2026-09-22)
+
+`buttons-machine-src/custom_components/buttons_machine/backends/be3.py`, wired
+through the registry, the discovery list, the add-keypad branch, the config
+flow, the licence tables and the panel badge. What this integration has to keep
+stable for it:
+
+* **`ctrlable_be3_keypad_event`** with `keypad_id`, `button`, `action`. The
+  backend filters on `keypad_id` matching the keypad's stored serial.
+* **The serial**, `<mac>-<address>-<page>`, from `keypad_id()`. It is stored in
+  the Buttons Machine entry, so changing its shape breaks keypads already
+  configured.
+* **LED unique ids** of `be3-<serial>-led<button>`, which is how the backend
+  finds a keypad's LED switches from the serial alone.
+* **`hass.data["ctrlable_be3"]["_keypad_registry"]`**, an object with a
+  `keypads` mapping, one entry per button block, each carrying `keypad_id`,
+  `keypad_name` and `buttons`. Screen pages are deliberately absent.
+
+Gestures map `press → press`, `click → release`, `hold_release → release`, and
+`hold` is dropped. The panel reports hold natively, but Buttons Machine routes
+every event down its native path as soon as a backend claims any native
+gesture, and that path only knows what the backend sends it — so claiming hold
+would lose double and triple tap, which this hardware cannot report at all.
+Forwarding press and release lets the controller derive all three.
+
+One wrinkle worth knowing: a keypad's button count is learned from its own
+traffic and starts at one, so a keypad added to Buttons Machine before every
+button has been pressed carries fewer buttons than the wall has. Press them
+all, then add it.

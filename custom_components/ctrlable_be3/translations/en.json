@@ -42,6 +42,22 @@
             }
           }
         }
+      },
+      "value": {
+        "name": "Control",
+        "state_attributes": {
+          "event_type": {
+            "state": {
+              "on": "On",
+              "off": "Off",
+              "brightness": "Brightness",
+              "open": "Open",
+              "close": "Close",
+              "stop": "Stop",
+              "colour_temperature": "Colour temperature"
+            }
+          }
+        }
       }
     },
     "switch": {
@@ -52,6 +68,11 @@
     "button": {
       "identify": {
         "name": "Identify address {address}"
+      }
+    },
+    "binary_sensor": {
+      "gateway_connection": {
+        "name": "Gateway connection"
       }
     }
   },
@@ -90,7 +111,7 @@
     },
     "configure_keypad": {
       "name": "Configure keypad",
-      "description": "Provisions a component as a keypad. This overwrites the component's existing configuration, including one written by another control system.",
+      "description": "Provisions a component as a keypad. This overwrites the component's existing configuration, including one written by another control system, and restarts the panel.",
       "fields": {
         "config_entry_id": {
           "name": "Gateway",
@@ -145,6 +166,84 @@
           "description": "The BE3 gateway to use."
         }
       }
+    },
+    "clear_panel": {
+      "name": "Clear all pages",
+      "description": "Sends a clear for every configured page so a component can be set up from scratch. Be warned that panels on firmware 0.10 ignore it: the pages stay on the screen and keep their names. The only thing that changes a page is writing a new configuration to its page number.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Gateway",
+          "description": "The BE3 gateway to use."
+        },
+        "address": {
+          "name": "Address",
+          "description": "Limit to one component. Leave empty to clear every page on the bus."
+        },
+        "pages": {
+          "name": "Sweep pages",
+          "description": "Clear every page number up to this, whether or not anything is configured there. Use it for pages left behind by another system: a page with no link never reports itself, so it cannot be found any other way. Requires an address."
+        }
+      }
+    },
+    "configure_page": {
+      "name": "Write pages to a panel",
+      "description": "Write a real configuration to one or more pages of a panel. This is the only operation a panel honours, so it is how a page left behind by another controller is taken over: the page cannot be removed, but it can be made yours, renamed, and pointed at a link this integration answers.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Gateway",
+          "description": "The BE3 gateway to send this to."
+        },
+        "address": {
+          "name": "Address",
+          "description": "The panel's bus address."
+        },
+        "slots": {
+          "name": "Pages",
+          "description": "Which page numbers to write, in order."
+        },
+        "kind": {
+          "name": "Page type",
+          "description": "What each page should become."
+        },
+        "name": {
+          "name": "Screen text",
+          "description": "One name per page, in the same order. Up to 10 characters each."
+        },
+        "colour_temperature": {
+          "name": "Offer colour temperature",
+          "description": "Dimmer pages only."
+        },
+        "direction": {
+          "name": "Orientation",
+          "description": "Shade pages only: 1 separate, 2 left to right, 3 right to left, 4 bottom to top."
+        }
+      }
+    },
+    "blank_page": {
+      "name": "Blank a page",
+      "description": "Point a page at nothing. Kept for other firmware: panels on 0.10 ignore an empty link, so this changes nothing there.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Gateway",
+          "description": "The BE3 gateway to send this to."
+        },
+        "address": {
+          "name": "Address",
+          "description": "The component's bus address."
+        },
+        "slot": {
+          "name": "Page",
+          "description": "Which page to blank."
+        },
+        "kind": {
+          "name": "Page type",
+          "description": "The type the page was written as."
+        },
+        "name": {
+          "name": "Screen text",
+          "description": "What the page should say once blank."
+        }
+      }
     }
   },
   "config_subentries": {
@@ -153,47 +252,117 @@
       "step": {
         "user": {
           "title": "Add a component",
-          "description": "Components normally appear on their own from the gateway. Add one by hand only if it is not reporting yet.",
+          "description": "Components appear on their own from the gateway. Add one here to give a panel another page: enter an address it already has and pick a free page number. Each page gets its own device, settings and entities.",
           "data": {
             "address": "Component address",
-            "kind": "Component type",
-            "buttons": "Number of buttons",
-            "slot": "Device slot",
-            "name": "Name",
-            "panel": "Panel group"
+            "kind": "Component type"
           },
           "data_description": {
-            "kind": "What this component is. The gateway reports that an address exists but never what lives there — press Identify to make it flash if you are not sure.",
-            "buttons": "Keypads only. How many buttons the panel has.",
-            "slot": "Logical slot on the gateway, 1 to 4. Only used when provisioning.",
-            "panel": "Components of one physical panel that share this label are grouped together. A SUBLIME Pro uses two addresses."
+            "kind": "What this component is. The gateway reports that an address exists but never what lives there — press Identify to make it flash if you are not sure."
           }
         },
         "reconfigure": {
-          "title": "Component settings",
-          "description": "Tell Home Assistant what this component is. Use the Identify button on this device if you need to find it first.",
+          "title": "Page {page} on component {address}",
+          "description": "**{name}** — what would you like to do with this page?",
+          "menu_options": {
+            "edit": "Edit this page",
+            "delete": "Delete this page"
+          }
+        },
+        "edit": {
+          "title": "Page {page} on component {address}",
+          "description": "Choose what this page is. Changing the type writes a new configuration to the panel, which restarts it. Leaving it unidentified hands it back to identifying itself.",
           "data": {
-            "address": "Component address",
-            "kind": "Component type",
-            "buttons": "Number of buttons",
-            "slot": "Device slot",
-            "name": "Name",
-            "panel": "Panel group"
+            "kind": "Component type"
           },
           "data_description": {
-            "kind": "What this component is. The gateway reports that an address exists but never what lives there — press Identify to make it flash if you are not sure.",
-            "buttons": "Keypads only. How many buttons the panel has.",
-            "slot": "Logical slot on the gateway, 1 to 4. Only used when provisioning.",
-            "panel": "Components of one physical panel that share this label are grouped together. A SUBLIME Pro uses two addresses."
+            "kind": "Press Identify on this device if you need to find the panel first."
           }
+        },
+        "keypad": {
+          "title": "Keypad settings — page {page} on {address}",
+          "description": "Buttons report press, click, hold and release, and each gets its own backlight switch.",
+          "data": {
+            "buttons": "Number of buttons",
+            "panel": "Panel group",
+            "slot": "Page",
+            "apply": "Write this to the panel",
+            "name": "Screen text",
+            "ignored": "Not a device"
+          },
+          "data_description": {
+            "buttons": "Set this by hand when you cannot reach the panel to press its buttons. The vendor documents panels of up to 6 buttons; larger ones are accepted but untested.",
+            "panel": "Components of one physical panel that share this label are grouped together. A SUBLIME Pro uses two addresses.",
+            "slot": "Which page on this panel. A screen shows one page per number and cycles through them with its top-left button. Fixed once the page exists — add another component to add a page.",
+            "apply": "Writes the configuration to the panel, which restarts it. Turn this off to record settings here without touching the hardware.",
+            "name": "Shown on the panel's own screen. The panel stores at most 10 bytes.",
+            "ignored": "Hides this address and stops writing to it. The gateway reports everything it sees on the bus, including parts of itself, so an address that never responds and never reports is not a component."
+          }
+        },
+        "dimmer": {
+          "title": "Dimmer settings — page {page} on {address}",
+          "description": "The panel shows a page per property it is given. Power and brightness always; colour temperature only if you add it here.",
+          "data": {
+            "target": "Controls",
+            "colour_temperature": "Offer colour temperature",
+            "panel": "Panel group",
+            "slot": "Page",
+            "apply": "Write this to the panel",
+            "name": "Screen text",
+            "ignored": "Not a device",
+            "leftover_target": "Leftover shade control"
+          },
+          "data_description": {
+            "target": "The light this panel drives. Without one, nothing is written to the panel — a screen controlling nothing is worse than none.",
+            "colour_temperature": "Adds a colour temperature page to the panel's selector. Removing it takes the page away.",
+            "panel": "Components of one physical panel that share this label are grouped together. A SUBLIME Pro uses two addresses.",
+            "slot": "Which page on this panel. A screen shows one page per number and cycles through them with its top-left button. Fixed once the page exists — add another component to add a page.",
+            "apply": "Writes the configuration to the panel, which restarts it. Turn this off to record settings here without touching the hardware.",
+            "name": "Shown on the panel's own screen. The panel stores at most 10 bytes.",
+            "ignored": "Hides this address and stops writing to it. The gateway reports everything it sees on the bus, including parts of itself, so an address that never responds and never reports is not a component.",
+            "leftover_target": "A page keeps every configuration it has ever been given, and nothing removes one from a panel. If this page shows a control it should not — a shade on a light page, or the reverse — point it at something here and it starts working instead of doing nothing. Leave empty if the page shows only what you expect."
+          }
+        },
+        "shade": {
+          "title": "Shade settings — page {page} on {address}",
+          "description": "The panel's buttons open, close and stop whatever this controls.",
+          "data": {
+            "target": "Controls",
+            "direction": "Shade orientation",
+            "panel": "Panel group",
+            "slot": "Page",
+            "apply": "Write this to the panel",
+            "name": "Screen text",
+            "ignored": "Not a device",
+            "leftover_target": "Leftover light control"
+          },
+          "data_description": {
+            "target": "The cover this panel drives. Without one, nothing is written to the panel.",
+            "direction": "How the shade travels, which the panel uses to label its buttons.",
+            "panel": "Components of one physical panel that share this label are grouped together. A SUBLIME Pro uses two addresses.",
+            "slot": "Which page on this panel. A screen shows one page per number and cycles through them with its top-left button. Fixed once the page exists — add another component to add a page.",
+            "apply": "Writes the configuration to the panel, which restarts it. Turn this off to record settings here without touching the hardware.",
+            "name": "Shown on the panel's own screen. The panel stores at most 10 bytes.",
+            "ignored": "Hides this address and stops writing to it. The gateway reports everything it sees on the bus, including parts of itself, so an address that never responds and never reports is not a component.",
+            "leftover_target": "A page keeps every configuration it has ever been given, and nothing removes one from a panel. If this page shows a control it should not — a shade on a light page, or the reverse — point it at something here and it starts working instead of doing nothing. Leave empty if the page shows only what you expect."
+          }
+        },
+        "confirm_type": {
+          "title": "That is not what this component does",
+          "description": "This component has been reporting as a **{observed}**, and you have chosen **{chosen}**.\n\nComponents are not interchangeable. A panel's button block and its screen slots are different hardware, and writing the wrong type leaves the component with no working configuration — its screen page stops working until the right type is written back.\n\nContinue only if you are sure. Otherwise go back and pick the type it has been reporting."
+        },
+        "delete": {
+          "title": "Stop managing page {page} on component {address}?",
+          "description": "This removes **{name}** from Home Assistant and nothing else. The panel keeps the page — nothing in this protocol removes one — so it stays on the screen with this name, and whatever it controlled it will no longer control. It will not be listed here again until you add it back."
         }
       },
       "error": {
-        "invalid_component": "Those settings are not usable. A keypad needs between 1 and 6 buttons.",
-        "slot_in_use": "Device slot already used by {slot_owner}. Two components in one slot overwrite each other's configuration on the panel."
+        "invalid_component": "Those settings are not usable. A keypad needs at least one button.",
+        "slot_in_use": "This address already has a page {slot_owner} here. Pick another page number."
       },
       "abort": {
-        "reconfigure_successful": "Component updated."
+        "reconfigure_successful": "Component updated.",
+        "deleted": "The page was removed and cleared from the panel."
       },
       "entry_type": "component"
     }

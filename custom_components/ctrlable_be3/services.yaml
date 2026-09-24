@@ -1,7 +1,6 @@
 identify:
   fields:
     config_entry_id:
-      required: true
       selector:
         config_entry:
           integration: ctrlable_be3
@@ -16,7 +15,6 @@ identify:
 set_address:
   fields:
     config_entry_id:
-      required: true
       selector:
         config_entry:
           integration: ctrlable_be3
@@ -38,7 +36,6 @@ set_address:
 configure_keypad:
   fields:
     config_entry_id:
-      required: true
       selector:
         config_entry:
           integration: ctrlable_be3
@@ -61,7 +58,7 @@ configure_keypad:
       selector:
         number:
           min: 1
-          max: 6
+          max: 32
           mode: box
     name:
       selector:
@@ -70,7 +67,6 @@ configure_keypad:
 clear_configuration:
   fields:
     config_entry_id:
-      required: true
       selector:
         config_entry:
           integration: ctrlable_be3
@@ -100,7 +96,143 @@ clear_configuration:
 start_update:
   fields:
     config_entry_id:
-      required: true
       selector:
         config_entry:
           integration: ctrlable_be3
+
+clear_panel:
+  fields:
+    config_entry_id:
+      selector:
+        config_entry:
+          integration: ctrlable_be3
+    address:
+      selector:
+        number:
+          min: 0
+          max: 255
+          mode: box
+    pages:
+      selector:
+        number:
+          min: 1
+          max: 32
+          mode: box
+blank_page:
+  name: Blank a page
+  description: >-
+    Point a page at nothing. A page cannot be removed from a panel — clearing
+    one has no observable effect on this firmware — so this overwrites it with
+    empty links instead. The page stays on the screen, but
+    stops asking about a link nobody owns and stops driving anything when it is
+    touched. Writing restarts the panel.
+  fields:
+    config_entry_id:
+      name: Gateway
+      description: The BE3 gateway to send this to.
+      selector:
+        config_entry:
+          integration: ctrlable_be3
+    address:
+      name: Address
+      description: The component's bus address.
+      required: true
+      selector:
+        number:
+          min: 0
+          max: 63
+          mode: box
+    slot:
+      name: Page
+      description: Which page on the panel to blank.
+      required: true
+      selector:
+        number:
+          min: 1
+          max: 32
+          mode: box
+    kind:
+      name: Page type
+      description: The type the page was written as, so the panel recognises it.
+      required: true
+      selector:
+        select:
+          options:
+            - dimmer
+            - shade
+    name:
+      name: Screen text
+      description: >-
+        What the page should say once it is blank. Up to 10 characters.
+      required: false
+      selector:
+        text:
+
+configure_page:
+  name: Write pages to a panel
+  description: >-
+    Write a real configuration to one or more pages of a panel. This is the
+    only operation a panel honours, so it is how a page left behind by another
+    controller is taken over: the page cannot be removed, but it can be made
+    yours, renamed, and pointed at a link this integration answers. Each page
+    restarts the panel and waits for it to come back, so several pages take a
+    few seconds each.
+  fields:
+    config_entry_id:
+      name: Gateway
+      description: The BE3 gateway to send this to.
+      selector:
+        config_entry:
+          integration: ctrlable_be3
+    address:
+      name: Address
+      description: The panel's bus address.
+      required: true
+      selector:
+        number:
+          min: 0
+          max: 63
+          mode: box
+    slots:
+      name: Pages
+      description: Which page numbers to write, in order.
+      required: true
+      selector:
+        select:
+          multiple: true
+          custom_value: true
+          options: ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10"]
+    kind:
+      name: Page type
+      description: What each page should become.
+      required: true
+      selector:
+        select:
+          options:
+            - dimmer
+            - shade
+    name:
+      name: Screen text
+      description: >-
+        One name per page, in the same order. Up to 10 characters each.
+        Leave empty to name them after their page number.
+      selector:
+        select:
+          multiple: true
+          custom_value: true
+          options: []
+    colour_temperature:
+      name: Offer colour temperature
+      description: Dimmer pages only. Adds the colour temperature property.
+      selector:
+        boolean:
+    direction:
+      name: Orientation
+      description: >-
+        Shade pages only. 1 separate, 2 left to right, 3 right to left,
+        4 bottom to top.
+      selector:
+        number:
+          min: 1
+          max: 4
+          mode: box

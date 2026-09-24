@@ -17,7 +17,7 @@ No Home Assistant imports, so the rules here are testable on their own.
 from __future__ import annotations
 
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 from typing import Any
 
@@ -82,6 +82,32 @@ class Component:
     name: str | None = None
     #: Groups components belonging to one physical panel, for area grouping.
     panel: str | None = None
+    #: True when a person set these values, which makes them authoritative:
+    #: traffic may then contradict them but never overrides them.
+    manual: bool = False
+    #: What this component controls: a Home Assistant entity id. A dimmer or
+    #: shade with no target has nothing to drive, so it is not provisioned.
+    target: str | None = None
+    #: What the page's *leftover* control drives, if it has one. A page keeps
+    #: the configuration of every personality it has ever had, so a dimmer
+    #: written over a shade still shows a shade control and still asks about
+    #: it. Pointing that at something is the only way to make it useful: the
+    #: panel will not give the page up.
+    leftover_target: str | None = None
+    #: Whether to give a dimmer a colour-temperature page. Features exist on
+    #: the panel because a link was written for them, so this is not decoration:
+    #: it decides what the screen offers.
+    colour_temperature: bool = False
+    #: Brightness range written to the panel as "min,max,step".
+    brightness_min: int = 0
+    brightness_max: int = 100
+    brightness_step: int = 5
+    #: Shade orientation, as the vendor numbers them.
+    direction: int = 4
+    #: Not a controllable component. The gateway reports everything it sees on
+    #: the bus, including parts of itself — its WiFi module appears as an
+    #: ordinary address that answers nothing and configures nothing.
+    ignored: bool = False
 
     def __post_init__(self) -> None:
         if not MIN_ADDRESS <= self.address <= MAX_ADDRESS:
@@ -107,6 +133,20 @@ class Component:
             )
 
     @property
+    def brightness_limits(self) -> str:
+        """The range as the panel wants it: "min,max,step"."""
+        return f"{self.brightness_min},{self.brightness_max},{self.brightness_step}"
+
+    @property
+    def controllable(self) -> bool:
+        """Whether this component has something to drive."""
+        if self.ignored:
+            return False
+        return self.kind in (ComponentKind.DIMMER, ComponentKind.SHADE) and bool(
+            self.target
+        )
+
+    @property
     def button_range(self) -> range:
         return range(1, self.buttons + 1)
 
@@ -122,6 +162,22 @@ class Component:
             data["name"] = self.name
         if self.panel:
             data["panel"] = self.panel
+        if self.manual:
+            data["manual"] = True
+        if self.ignored:
+            data["ignored"] = True
+        if self.target:
+            data["target"] = self.target
+        if self.leftover_target:
+            data["leftover_target"] = self.leftover_target
+        if self.colour_temperature:
+            data["colour_temperature"] = True
+        if self.kind is ComponentKind.DIMMER:
+            data["brightness_min"] = self.brightness_min
+            data["brightness_max"] = self.brightness_max
+            data["brightness_step"] = self.brightness_step
+        if self.kind is ComponentKind.SHADE:
+            data["direction"] = self.direction
         return data
 
     @classmethod
@@ -143,6 +199,15 @@ class Component:
             buttons=int(data.get("buttons", 0)),
             name=data.get("name") or None,
             panel=data.get("panel") or None,
+            manual=bool(data.get("manual", False)),
+            ignored=bool(data.get("ignored", False)),
+            target=data.get("target") or None,
+            leftover_target=data.get("leftover_target") or None,
+            colour_temperature=bool(data.get("colour_temperature", False)),
+            brightness_min=int(data.get("brightness_min", 0)),
+            brightness_max=int(data.get("brightness_max", 100)),
+            brightness_step=int(data.get("brightness_step", 5)),
+            direction=int(data.get("direction", 4)),
         )
 
 
@@ -150,13 +215,17 @@ def parse_components(raw: Iterable[dict[str, Any]]) -> tuple[Component, ...]:
     """Build components from stored configuration, rejecting duplicates."""
     components = tuple(Component.from_dict(item) for item in raw)
 
-    seen: set[int] = set()
+    # One page per slot per address. A screen holds many pages, and the panel
+    # tells them apart by the slot it quotes back in every message.
+    seen: set[tuple[int, int]] = set()
     for component in components:
-        if component.address in seen:
+        key = (component.address, component.slot)
+        if key in seen:
             raise ConfigurationError(
-                f"Address {component.address} is configured more than once"
+                f"Address {component.address} already has a page in slot "
+                f"{component.slot}"
             )
-        seen.add(component.address)
+        seen.add(key)
 
     # Only configured components own a slot on the gateway; discovered ones
     # keep the default until someone says what they are.
@@ -178,11 +247,50 @@ def dump_components(components: Iterable[Component]) -> list[dict[str, Any]]:
     return [component.to_dict() for component in components]
 
 
+def assign_slots(components: Iterable[Component]) -> tuple[Component, ...]:
+    """Give every page on an address a distinct slot.
+
+    Slots are per address, not global: the panel quotes the slot back with the
+    address, so two panels may both use slot 1 without ambiguity. Pages on one
+    address must differ, because the slot is how that panel tells its pages
+    apart.
+    """
+    ordered = sorted(components, key=lambda item: (item.address, item.slot))
+    taken: dict[int, set[int]] = {}
+    result: list[Component | None] = []
+
+    # First pass: keep slots that are already distinct for their address.
+    for component in ordered:
+        used = taken.setdefault(component.address, set())
+        if component.slot not in used and 1 <= component.slot <= MAX_DEVICE_INDEX:
+            used.add(component.slot)
+            result.append(component)
+        else:
+            result.append(None)
+
+    # Second pass: fill the gaps left by clashes.
+    for index, component in enumerate(result):
+        if component is not None:
+            continue
+        original = ordered[index]
+        used = taken.setdefault(original.address, set())
+        slot = next(
+            (s for s in range(1, MAX_DEVICE_INDEX + 1) if s not in used), None
+        )
+        if slot is None:
+            raise ConfigurationError(
+                f"Address {original.address} cannot hold more than "
+                f"{MAX_DEVICE_INDEX} pages"
+            )
+        used.add(slot)
+        result[index] = replace(original, slot=slot)
+
+    return tuple(component for component in result if component is not None)
+
+
 def next_free_slot(components: Iterable[Component]) -> int:
-    """Pick a device slot not already in use by a configured component."""
-    used = {
-        component.slot for component in components if component.kind.configured
-    }
+    """Pick a slot not already used by another page on the same address."""
+    used = {component.slot for component in components}
     for slot in range(1, MAX_DEVICE_INDEX + 1):
         if slot not in used:
             return slot
@@ -196,39 +304,41 @@ def next_free_slot(components: Iterable[Component]) -> int:
 # ---------------------------------------------------------------------------
 
 
-def keypad_id(mac: str, address: int) -> str:
-    """Identity of one component, stable across restarts and DHCP leases.
+def keypad_id(mac: str, address: int, slot: int) -> str:
+    """Identity of one page, stable across restarts and DHCP leases.
 
-    A bus address alone is not unique — two gateways can both have an address
-    16 — so identity is the gateway's MAC plus the address. This is what the
-    Buttons Machine backend stores as its ``device_serial`` and compares against
-    the events we publish, and it is the stem of every entity id below, so LEDs
-    can be found from the serial alone.
+    Three parts, each earning its place: the gateway's MAC, because two
+    gateways can both have an address 16; the address, because a bus has many
+    components; and the page, because one component can hold several.
+
+    This is what the Buttons Machine backend stores as its ``device_serial``
+    and compares against the events we publish, and it is the stem of every
+    entity id below, so LEDs can be found from the serial alone.
     """
-    return f"{_normalise_mac(mac)}-{address}"
+    return f"{_normalise_mac(mac)}-{address}-{slot}"
 
 
 def gateway_device_id(mac: str) -> str:
     return f"be3-{_normalise_mac(mac)}"
 
 
-def component_device_id(mac: str, address: int) -> str:
-    """Device identity for one bus component.
+def component_device_id(mac: str, address: int, slot: int) -> str:
+    """Device identity for one page on the bus.
 
-    One device per component, not per physical panel: the bus reports
-    components, and identify and re-address both act on a single address. A
-    SUBLIME Pro therefore appears as two devices, which is what its two
-    addresses actually are.
+    Keyed by address *and* slot. A screen holds a page per slot it has been
+    given — a light on one, a shade on another — and the panel quotes the slot
+    back as ``idx`` in everything it sends, so that pair is what identifies a
+    page. Keying by address alone would let one page overwrite another.
     """
-    return f"be3-{keypad_id(mac, address)}"
+    return f"be3-{keypad_id(mac, address, slot)}"
 
 
-def button_unique_id(mac: str, address: int, button: int) -> str:
-    return f"be3-{keypad_id(mac, address)}-button{button}"
+def button_unique_id(mac: str, address: int, slot: int, button: int) -> str:
+    return f"be3-{keypad_id(mac, address, slot)}-button{button}"
 
 
-def led_unique_id(mac: str, address: int, button: int) -> str:
-    return f"be3-{keypad_id(mac, address)}-led{button}"
+def led_unique_id(mac: str, address: int, slot: int, button: int) -> str:
+    return f"be3-{keypad_id(mac, address, slot)}-led{button}"
 
 
 def led_unique_id_prefix(serial: str) -> str:
@@ -236,8 +346,12 @@ def led_unique_id_prefix(serial: str) -> str:
     return f"be3-{serial}-led"
 
 
-def identify_unique_id(mac: str, address: int) -> str:
-    return f"be3-{keypad_id(mac, address)}-identify"
+def value_unique_id(mac: str, address: int, slot: int) -> str:
+    return f"be3-{keypad_id(mac, address, slot)}-value"
+
+
+def identify_unique_id(mac: str, address: int, slot: int) -> str:
+    return f"be3-{keypad_id(mac, address, slot)}-identify"
 
 
 def _normalise_mac(mac: str) -> str:
